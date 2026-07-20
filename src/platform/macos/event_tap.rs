@@ -17,7 +17,8 @@ use std::sync::mpsc::Sender;
 
 use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
 use core_graphics::event::{
-    CGEvent, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
+    CGEvent, CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions,
+    CGEventTapPlacement, CGEventType,
 };
 
 use crate::platform::InputEvent;
@@ -31,11 +32,19 @@ pub fn start(tx: Sender<InputEvent>) {
         CGEventTapPlacement::HeadInsertEventTap,
         CGEventTapOptions::ListenOnly,
         vec![CGEventType::LeftMouseUp],
-        move |_proxy, _event_type, _event: &CGEvent| {
-            // The only thing we watch for is a left mouse button release —
-            // see `Config::enabled`'s doc comment for why that alone is a
-            // sufficient signal for "the user may have just selected text".
-            let _ = tx.send(InputEvent::MouseUp);
+        move |_proxy, _event_type, event: &CGEvent| {
+            // Control+click is macOS's mouse-only stand-in for a secondary
+            // (right) click — physically still a left mouse button release,
+            // so the tap sees it as `LeftMouseUp` like any other click. It
+            // opens a context menu rather than ending a text selection, and
+            // that menu runs its own event-tracking loop; firing a
+            // synthesized ⌘C into the middle of it gets interpreted as a
+            // menu command (dismissing the menu, sometimes after triggering
+            // whatever item ⌘C happens to be the key equivalent for). So
+            // this is excluded rather than treated as a normal click.
+            if !event.get_flags().contains(CGEventFlags::CGEventFlagControl) {
+                let _ = tx.send(InputEvent::MouseUp);
+            }
             None
         },
     );

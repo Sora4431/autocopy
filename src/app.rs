@@ -46,7 +46,7 @@ fn react_to_events(
     platform: Arc<CurrentPlatform>,
     config: Arc<Mutex<Config>>,
 ) {
-    for InputEvent::MouseUp in rx {
+    for InputEvent::PotentialSelection in rx {
         let cfg = config.lock().unwrap().clone();
         if !cfg.enabled {
             continue;
@@ -54,13 +54,20 @@ fn react_to_events(
 
         // Runs on its own short-lived thread so the delay doesn't block the
         // receiver loop — important for double/triple-clicks, which produce
-        // several MouseUp events in quick succession and should each be
-        // handled independently (the last one naturally "wins" the
-        // clipboard, since it reflects the final selection).
+        // several events in quick succession and should each be handled
+        // independently (the last one naturally "wins" the clipboard, since
+        // it reflects the final selection).
         let platform = Arc::clone(&platform);
         let delay = Duration::from_millis(cfg.action_delay_ms);
         thread::spawn(move || {
             thread::sleep(delay);
+            // `Some(false)` is the app affirmatively saying "nothing is
+            // selected" — copying then would only trigger the system alert
+            // sound. `None` (app doesn't expose selection state) copies
+            // anyway; see `Platform::has_text_selection` for the rationale.
+            if platform.has_text_selection() == Some(false) {
+                return;
+            }
             platform.send_copy_shortcut();
         });
     }

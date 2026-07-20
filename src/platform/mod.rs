@@ -1,10 +1,11 @@
 //! Platform abstraction layer.
 //!
-//! AutoCopy needs three OS-level capabilities that don't exist in `std`:
+//! AutoCopy needs four OS-level capabilities that don't exist in `std`:
 //!
 //!   1. Global mouse monitoring (even when this app isn't focused)
 //!   2. Synthesizing the "copy" keyboard shortcut (⌘C) system-wide
-//!   3. Requesting the OS permission that (1) and (2) require (Accessibility on macOS)
+//!   3. Asking the focused app whether any text is actually selected
+//!   4. Requesting the OS permission the above require (Accessibility on macOS)
 //!
 //! Every OS exposes these very differently (CGEventTap vs. SetWindowsHookEx
 //! vs. XRecord/evdev), so all OS-specific code lives behind the `Platform`
@@ -36,9 +37,13 @@ pub use linux::LinuxPlatform as CurrentPlatform;
 /// require reshaping the channel between `Platform` and `app.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEvent {
-    /// The left mouse button was released — see the doc comment on
-    /// `Config::enabled` for why this alone is a sufficient signal.
-    MouseUp,
+    /// The user finished a gesture that plausibly ended a text selection —
+    /// a drag past a small threshold, or a double/triple-click. Deliberately
+    /// a "maybe": the platform layer filters on gesture shape alone, and the
+    /// authoritative "is text actually selected?" check
+    /// (`Platform::has_text_selection`) runs later, right before the copy
+    /// fires.
+    PotentialSelection,
 }
 
 /// Everything a platform backend must provide. Implement this once per OS
@@ -62,4 +67,18 @@ pub trait Platform {
     /// Synthesizes the OS "copy" shortcut (⌘C on macOS) as if the user
     /// pressed it themselves. Safe to call from any thread.
     fn send_copy_shortcut(&self);
+
+    /// Best-effort answer to "does the focused UI element have text
+    /// selected right now?".
+    ///
+    /// - `Some(true)`: the app reports selected text — copying will work.
+    /// - `Some(false)`: the app affirmatively reports *no* selection.
+    ///   Sending a copy shortcut now would do nothing except play the
+    ///   system alert sound (apps beep when their Copy command has nothing
+    ///   to act on), so the caller should skip it.
+    /// - `None`: the platform can't tell (the app doesn't expose selection
+    ///   state). The caller should copy anyway — wrongly skipping would
+    ///   silently break AutoCopy in every such app, while wrongly copying
+    ///   at worst beeps.
+    fn has_text_selection(&self) -> Option<bool>;
 }

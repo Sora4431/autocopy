@@ -7,6 +7,7 @@
 
 mod event_tap;
 mod permissions;
+mod selection;
 mod simulate;
 
 use std::sync::mpsc::Sender;
@@ -56,5 +57,9 @@ impl Platform for MacPlatform {
 
     fn send_copy_shortcut(&self) {
         simulate::send_copy();
+    }
+
+    fn has_text_selection(&self) -> Option<bool> {
+        selection::has_text_selection()
     }
 }

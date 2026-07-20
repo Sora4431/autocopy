@@ -14,11 +14,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// Copy whenever the left mouse button is released. This alone covers
-    /// drag selection, double-click word-select, and triple-click
-    /// paragraph-select — a mouse-up is a mouse-up, and sending ⌘C when
-    /// nothing happens to be selected is a harmless no-op, so there's no
-    /// need to distinguish "was this actually a drag" from the event alone.
+    /// Master switch, mirrored by the "Enabled" checkbox in the tray menu.
+    /// When on, AutoCopy copies after gestures that look like a finished
+    /// text selection (a drag, or a double/triple-click) — see the
+    /// `platform` module docs for the two layers of filtering behind that.
     pub enabled: bool,
 
     /// Delay, in milliseconds, between the triggering event and sending the

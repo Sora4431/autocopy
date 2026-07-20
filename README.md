@@ -11,7 +11,9 @@ and sends one keystroke. That's the whole product.
 ## Features
 
 - Lives in the menu bar only — no Dock icon, no windows
-- Auto-copies when you finish a drag/click text selection (mouse-up)
+- Auto-copies when you finish a text selection (drag, double- or triple-click)
+- Skips plain clicks, Control-clicks, and gestures that didn't actually
+  select anything — no beeps, no clipboard churn
 - One on/off checkbox in the tray menu, plus Quit
 - Configurable reaction delay (default 50ms)
 - Zero network access, zero telemetry, zero data collection
@@ -41,10 +43,13 @@ prompt. If you skip it, add AutoCopy manually in that settings pane, then
 quit and relaunch.
 
 **What AutoCopy does with that access:** it opens a *listen-only* event tap
-(see below) that reacts to exactly one thing — left mouse button releases —
-and does nothing else with the input stream. It never reads or stores
-keystrokes, never logs anything, and never sends anything over the network
-(the app has no network code at all).
+(see below) that watches exactly one thing — left mouse button presses and
+releases — and does nothing else with the input stream. After a
+selection-shaped gesture, it also asks the focused app (through the same
+Accessibility API, via `AXSelectedText`) whether any text is actually
+selected; the answer is checked for non-emptiness and immediately
+discarded. It never reads or stores keystrokes, never logs anything, and
+never sends anything over the network (the app has no network code at all).
 
 ## Architecture
 
@@ -60,7 +65,8 @@ src/
         mod.rs        the `Platform` trait + `InputEvent` enum
         macos/         macOS implementation (only backend in the MVP)
             mod.rs      ties the pieces together, owns the Cocoa run loop
-            event_tap.rs  global mouse monitoring (CGEventTap)
+            event_tap.rs  global mouse monitoring + gesture filter (CGEventTap)
+            selection.rs  "is text actually selected?" check (AXSelectedText)
             simulate.rs   synthesizing ⌘C (CGEventPost)
             permissions.rs  Accessibility permission check/request
         windows.rs      stub — documents what a real backend would use
@@ -82,6 +88,7 @@ pub trait Platform {
     fn request_permission(&self);
     fn start_monitoring(&self, tx: Sender<InputEvent>);
     fn send_copy_shortcut(&self);
+    fn has_text_selection(&self) -> Option<bool>;
 }
 ```
 
@@ -97,21 +104,44 @@ nothing left for our own trait to abstract there.
 ## Event flow
 
 ```
- CGEventTap (macOS)              event_tap.rs             app.rs               platform
- ───────────────────             ─────────────            ──────               ────────
- left mouse button up   ───▶   InputEvent::MouseUp   ───▶  if cfg.enabled  ───▶ sleep(delay_ms)
-                                                                                 send_copy_shortcut()
+ CGEventTap (macOS)        event_tap.rs                              app.rs / platform
+ ───────────────────       ─────────────                             ─────────────────
+ left mouse down    ───▶  remember where the click started
+ left mouse up      ───▶  gesture filter:
+                            Control held?              → ignore (right-click stand-in)
+                            double/triple click?       → selection gesture
+                            single click, moved ≥ 4pt? → drag selection
+                            otherwise                  → ignore (plain click)
+                                    │
+                                    ▼
+                          InputEvent::PotentialSelection
+                                    │  if cfg.enabled
+                                    ▼
+                          sleep(action_delay_ms)
+                                    │
+                          focused app says "no text selected"? → do nothing
+                                    ▼
+                          send ⌘C (send_copy_shortcut)
 ```
 
-Two design decisions worth calling out:
+Three design decisions worth calling out:
 
-- **Why react to every mouse-up, not just "the end of a drag"?** A mouse-up
-  is a mouse-up whether it ends a drag, a double-click (word select), or a
-  triple-click (paragraph select). Sending ⌘C when nothing happens to be
-  selected is a harmless no-op, so there's no need to measure drag distance
-  or otherwise classify the click — and for double/triple-clicks, each
-  mouse-up fires its own (independent, non-blocking) copy, so the *last* one
-  naturally reflects the final selection.
+- **Why not just copy on every mouse-up?** The first prototype did exactly
+  that, on the theory that ⌘C with nothing selected is a harmless no-op.
+  It isn't: when an app's Copy command has nothing to act on, a synthesized
+  ⌘C triggers the system alert sound — so every plain click (a Finder
+  sidebar item, a button, focusing a window) beeped. Hence the two-layer
+  filter: first the *shape* of the gesture (did the pointer travel, or was
+  it a multi-click?), then the *substance* (does the focused app report
+  actual selected text?).
+
+- **Why is the selection check only "best effort"?** Not every app
+  implements the part of the Accessibility protocol that exposes selected
+  text (`AXSelectedText`). The check is therefore three-state: confirmed
+  selection → copy; confirmed *empty* → skip; unknown → copy anyway,
+  because silently skipping would break AutoCopy entirely in apps that
+  simply don't report selection state, while a spurious copy at worst
+  beeps.
 
 - **Why a delay before acting?** The frontmost app needs a moment after the
   mouse-up to actually update its internal selection state before a
@@ -121,6 +151,14 @@ Two design decisions worth calling out:
 
 ## Known limitations
 
+- **Apps that don't report selection state via Accessibility** fall back to
+  gesture-only detection: there, a drag that didn't actually select text
+  can still fire ⌘C — an audible beep, or (e.g. when dragging files in
+  Finder) an unintended file-copy landing on the clipboard.
+- **Shift+click to extend a selection doesn't auto-copy.** A plain click's
+  shape is indistinguishable from list multi-select gestures, and a wrong
+  copy is worse than an occasional manual ⌘C, so single clicks never
+  qualify regardless of modifiers.
 - **Restart after granting permission:** AutoCopy doesn't poll for the
   Accessibility permission being granted while running; if you launch it
   before granting access, quit and relaunch after granting it.

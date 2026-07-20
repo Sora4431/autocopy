@@ -15,6 +15,10 @@
 //!     `has_permission`/`request_permission`.
 //!   - Synthesizing Ctrl+C: `XTestFakeKeyEvent` on X11, or a virtual
 //!     `uinput` device (`/dev/uinput`) as a compositor-agnostic fallback.
+//!   - AT-SPI2 (the `org.a11y.atspi` D-Bus interfaces, `Text` in
+//!     particular) to ask whether the focused element has a text selection
+//!     — the equivalent of macOS's `AXSelectedText` check behind
+//!     `has_text_selection`.
 //!   - Tray icon: already handled for us, since `tray.rs` uses the
 //!     `tray-icon` crate, which supports Linux via
 //!     `libappindicator`/`StatusNotifierItem`.
@@ -50,6 +54,10 @@ impl Platform for LinuxPlatform {
     }
 
     fn send_copy_shortcut(&self) {
+        todo!("Linux backend not yet implemented — see module docs")
+    }
+
+    fn has_text_selection(&self) -> Option<bool> {
         todo!("Linux backend not yet implemented — see module docs")
     }
 }

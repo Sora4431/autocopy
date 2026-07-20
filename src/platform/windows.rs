@@ -5,6 +5,9 @@
 //!   - `SetWindowsHookExW(WH_MOUSE_LL, ...)` for global mouse monitoring —
 //!     the Win32 equivalent of a `CGEventTap`.
 //!   - `SendInput` to synthesize Ctrl+C.
+//!   - UI Automation (`IUIAutomation` + the `TextPattern`) to ask whether
+//!     the focused element has a text selection — the equivalent of
+//!     macOS's `AXSelectedText` check behind `has_text_selection`.
 //!   - No Accessibility-style permission gate exists for a process hooking
 //!     its own session's input, so `has_permission` can simply return
 //!     `true` and `request_permission` can be a no-op. (Some antivirus/EDR
@@ -43,6 +46,10 @@ impl Platform for WindowsPlatform {
     }
 
     fn send_copy_shortcut(&self) {
+        todo!("Windows backend not yet implemented — see module docs")
+    }
+
+    fn has_text_selection(&self) -> Option<bool> {
         todo!("Windows backend not yet implemented — see module docs")
     }
 }

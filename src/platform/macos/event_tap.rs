@@ -17,19 +17,10 @@ use std::sync::mpsc::Sender;
 
 use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
 use core_graphics::event::{
-    CGEvent, CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
-    CGEventType, EventField,
+    CGEvent, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
 };
 
 use crate::platform::InputEvent;
-
-/// Virtual keycode for the physical "A" key on ANSI (US QWERTY-family)
-/// layouts. Non-Latin and non-QWERTY layouts (Dvorak, AZERTY, …) may put a
-/// different character there; correctly handling every layout requires
-/// translating the keycode through the current input source
-/// (`UCKeyTranslate`), which is out of scope for the MVP — see the README's
-/// "Known limitations" section.
-const KEYCODE_A: i64 = 0x00;
 
 /// Starts the event tap and registers it on the current (main) thread's run
 /// loop. Does not block — the caller is expected to pump the run loop itself
@@ -39,9 +30,12 @@ pub fn start(tx: Sender<InputEvent>) {
         CGEventTapLocation::HID,
         CGEventTapPlacement::HeadInsertEventTap,
         CGEventTapOptions::ListenOnly,
-        vec![CGEventType::LeftMouseUp, CGEventType::KeyDown],
-        move |_proxy, event_type, event: &CGEvent| {
-            handle_event(event_type, event, &tx);
+        vec![CGEventType::LeftMouseUp],
+        move |_proxy, _event_type, _event: &CGEvent| {
+            // The only thing we watch for is a left mouse button release —
+            // see `Config::enabled`'s doc comment for why that alone is a
+            // sufficient signal for "the user may have just selected text".
+            let _ = tx.send(InputEvent::MouseUp);
             None
         },
     );
@@ -73,31 +67,4 @@ pub fn start(tx: Sender<InputEvent>) {
     // rather than dropped — dropping it here would remove the tap
     // immediately after this function returns.
     std::mem::forget(tap);
-}
-
-fn handle_event(event_type: CGEventType, event: &CGEvent, tx: &Sender<InputEvent>) {
-    let flags = event.get_flags();
-
-    match event_type {
-        CGEventType::LeftMouseUp => {
-            let input_event = if flags.contains(CGEventFlags::CGEventFlagAlternate) {
-                InputEvent::ModifierClick
-            } else {
-                InputEvent::MouseUp
-            };
-            let _ = tx.send(input_event);
-        }
-        CGEventType::KeyDown => {
-            let keycode = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE);
-            let is_plain_cmd_a = keycode == KEYCODE_A
-                && flags.contains(CGEventFlags::CGEventFlagCommand)
-                && !flags.contains(CGEventFlags::CGEventFlagShift)
-                && !flags.contains(CGEventFlags::CGEventFlagAlternate)
-                && !flags.contains(CGEventFlags::CGEventFlagControl);
-            if is_plain_cmd_a {
-                let _ = tx.send(InputEvent::SelectAll);
-            }
-        }
-        _ => {}
-    }
 }

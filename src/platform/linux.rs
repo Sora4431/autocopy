@@ -13,7 +13,7 @@
 //!     `input` group. That group membership is the closest Linux analogue
 //!     of macOS's Accessibility permission, and a natural fit for
 //!     `has_permission`/`request_permission`.
-//!   - Synthesizing Ctrl+C/Ctrl+V: `XTestFakeKeyEvent` on X11, or a virtual
+//!   - Synthesizing Ctrl+C: `XTestFakeKeyEvent` on X11, or a virtual
 //!     `uinput` device (`/dev/uinput`) as a compositor-agnostic fallback.
 //!   - Tray icon: already handled for us, since `tray.rs` uses the
 //!     `tray-icon` crate, which supports Linux via
@@ -50,10 +50,6 @@ impl Platform for LinuxPlatform {
     }
 
     fn send_copy_shortcut(&self) {
-        todo!("Linux backend not yet implemented — see module docs")
-    }
-
-    fn send_paste_shortcut(&self) {
         todo!("Linux backend not yet implemented — see module docs")
     }
 }

@@ -57,8 +57,4 @@ impl Platform for MacPlatform {
     fn send_copy_shortcut(&self) {
         simulate::send_copy();
     }
-
-    fn send_paste_shortcut(&self) {
-        simulate::send_paste();
-    }
 }

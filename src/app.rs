@@ -41,24 +41,16 @@ pub fn run() -> ! {
     unreachable!("Platform::start_monitoring must never return");
 }
 
-enum Action {
-    Copy,
-    Paste,
-}
-
 fn react_to_events(
     rx: Receiver<InputEvent>,
     platform: Arc<CurrentPlatform>,
     config: Arc<Mutex<Config>>,
 ) {
-    for event in rx {
+    for InputEvent::MouseUp in rx {
         let cfg = config.lock().unwrap().clone();
-        let action = match event {
-            InputEvent::MouseUp if cfg.copy_on_selection => Action::Copy,
-            InputEvent::SelectAll if cfg.copy_on_select_all => Action::Copy,
-            InputEvent::ModifierClick if cfg.paste_on_modifier_click => Action::Paste,
-            _ => continue,
-        };
+        if !cfg.enabled {
+            continue;
+        }
 
         // Runs on its own short-lived thread so the delay doesn't block the
         // receiver loop — important for double/triple-clicks, which produce
@@ -69,10 +61,7 @@ fn react_to_events(
         let delay = Duration::from_millis(cfg.action_delay_ms);
         thread::spawn(move || {
             thread::sleep(delay);
-            match action {
-                Action::Copy => platform.send_copy_shortcut(),
-                Action::Paste => platform.send_paste_shortcut(),
-            }
+            platform.send_copy_shortcut();
         });
     }
 }

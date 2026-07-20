@@ -1,7 +1,7 @@
 //! Menu bar icon and dropdown menu.
 //!
-//! This is the one piece of UI in the entire app: an icon, three checkboxes
-//! (one per trigger, mirroring `Config`), and Quit. Built on `tray-icon`,
+//! This is the one piece of UI in the entire app: an icon, an "Enabled"
+//! checkbox mirroring `Config::enabled`, and Quit. Built on `tray-icon`,
 //! which already abstracts over NSStatusItem (macOS) / Shell_NotifyIcon
 //! (Windows) / StatusNotifierItem (Linux) — unlike input monitoring, there's
 //! no reason to hide this behind our own `Platform` trait, since the crate
@@ -17,40 +17,15 @@ use crate::config::Config;
 pub fn build(config: Arc<Mutex<Config>>) -> TrayIcon {
     let snapshot = config.lock().unwrap().clone();
 
-    let copy_on_selection = CheckMenuItem::new(
-        "Copy on text selection",
-        true,
-        snapshot.copy_on_selection,
-        None,
-    );
-    let copy_on_select_all = CheckMenuItem::new(
-        "Copy on \u{2318}A (Select All)",
-        true,
-        snapshot.copy_on_select_all,
-        None,
-    );
-    let paste_on_modifier_click = CheckMenuItem::new(
-        "Paste on \u{2325}-click (Option+Click)",
-        true,
-        snapshot.paste_on_modifier_click,
-        None,
-    );
+    let enabled = CheckMenuItem::new("Enabled", true, snapshot.enabled, None);
     let quit = MenuItem::new("Quit AutoCopy", true, None);
 
     let menu = Menu::new();
-    menu.append_items(&[
-        &copy_on_selection,
-        &copy_on_select_all,
-        &paste_on_modifier_click,
-        &PredefinedMenuItem::separator(),
-        &quit,
-    ])
-    .expect("failed to build tray menu");
+    menu.append_items(&[&enabled, &PredefinedMenuItem::separator(), &quit])
+        .expect("failed to build tray menu");
 
     let quit_id = quit.id().clone();
-    let copy_on_selection_id = copy_on_selection.id().clone();
-    let copy_on_select_all_id = copy_on_select_all.id().clone();
-    let paste_on_modifier_click_id = paste_on_modifier_click.id().clone();
+    let enabled_id = enabled.id().clone();
 
     // `tray-icon`/`muda`'s menu items wrap platform-native handles (`Rc`
     // internally) and are therefore not `Send`/`Sync`, but
@@ -58,25 +33,15 @@ pub fn build(config: Arc<Mutex<Config>>) -> TrayIcon {
     // below intentionally captures only `MenuId`s (plain `String` wrappers)
     // and `config`, never a `CheckMenuItem` itself. The native checkbox
     // already flips its own visual state on click independent of this
-    // handler; here we just mirror that into `Config` and persist it. Each
-    // arm is deliberately explicit rather than table-driven — there are only
-    // three items, and this keeps the id-to-field mapping obvious.
+    // handler; here we just mirror that into `Config` and persist it.
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
         if event.id == quit_id {
             std::process::exit(0);
+        } else if event.id == enabled_id {
+            let mut cfg = config.lock().unwrap();
+            cfg.enabled = !cfg.enabled;
+            cfg.save();
         }
-
-        let mut cfg = config.lock().unwrap();
-        if event.id == copy_on_selection_id {
-            cfg.copy_on_selection = !cfg.copy_on_selection;
-        } else if event.id == copy_on_select_all_id {
-            cfg.copy_on_select_all = !cfg.copy_on_select_all;
-        } else if event.id == paste_on_modifier_click_id {
-            cfg.paste_on_modifier_click = !cfg.paste_on_modifier_click;
-        } else {
-            return;
-        }
-        cfg.save();
     }));
 
     TrayIconBuilder::new()

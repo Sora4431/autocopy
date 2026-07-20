@@ -12,19 +12,18 @@ and sends one keystroke. That's the whole product.
 
 - Lives in the menu bar only — no Dock icon, no windows
 - Auto-copies when you finish a drag/click text selection (mouse-up)
-- Optionally auto-copies after ⌘A (Select All)
-- Optionally auto-pastes at the cursor when you ⌥-click (Option+Click)
-- Each trigger is an independent on/off checkbox in the tray menu
+- One on/off checkbox in the tray menu, plus Quit
 - Configurable reaction delay (default 50ms)
 - Zero network access, zero telemetry, zero data collection
 
 ## Non-goals
 
 - Clipboard history or multiple clipboards
+- Auto-paste, or any other action besides copying
 - OCR, AI, or content transformation
 - Cloud sync of any kind
 - Keyboard shortcuts to trigger actions manually
-- Any settings beyond the four in [`Config`](src/config.rs)
+- Any settings beyond the two in [`Config`](src/config.rs)
 
 ## Why does it need Accessibility permission?
 
@@ -34,7 +33,7 @@ through the same API surface — Quartz Event Services — that keyboard
 remapping and window-management tools use, and Apple gates all of it behind
 the **Accessibility** permission (System Settings → Privacy & Security →
 Accessibility). There's no narrower permission available; observing global
-input and observing *only selection-related* input aren't different
+mouse input and observing *only selection-related* input aren't different
 capabilities as far as macOS is concerned.
 
 AutoCopy asks for this once, on first launch, via the standard system
@@ -42,10 +41,10 @@ prompt. If you skip it, add AutoCopy manually in that settings pane, then
 quit and relaunch.
 
 **What AutoCopy does with that access:** it opens a *listen-only* event tap
-(see below) that reacts to two things — left mouse button releases, and
-⌘A key-down events — and does nothing else with the input stream. It never
-reads or stores keystrokes, never logs anything, and never sends anything
-over the network (the app has no network code at all).
+(see below) that reacts to exactly one thing — left mouse button releases —
+and does nothing else with the input stream. It never reads or stores
+keystrokes, never logs anything, and never sends anything over the network
+(the app has no network code at all).
 
 ## Architecture
 
@@ -59,8 +58,8 @@ src/
         mod.rs        the `Platform` trait + `InputEvent` enum
         macos/         macOS implementation (only backend in the MVP)
             mod.rs      ties the pieces together, owns the Cocoa run loop
-            event_tap.rs  global input monitoring (CGEventTap)
-            simulate.rs   synthesizing ⌘C/⌘V (CGEventPost)
+            event_tap.rs  global mouse monitoring (CGEventTap)
+            simulate.rs   synthesizing ⌘C (CGEventPost)
             permissions.rs  Accessibility permission check/request
         windows.rs      stub — documents what a real backend would use
         linux.rs        stub — documents what a real backend would use
@@ -75,7 +74,6 @@ pub trait Platform {
     fn request_permission(&self);
     fn start_monitoring(&self, tx: Sender<InputEvent>);
     fn send_copy_shortcut(&self);
-    fn send_paste_shortcut(&self);
 }
 ```
 
@@ -91,14 +89,10 @@ nothing left for our own trait to abstract there.
 ## Event flow
 
 ```
- CGEventTap (macOS)              event_tap.rs             app.rs                platform
- ───────────────────             ─────────────            ──────                ────────
- left mouse button up   ───▶   InputEvent::MouseUp   ───▶  if copy_on_selection  ───▶ sleep(delay_ms)
-                                                                                       send_copy_shortcut()
- plain ⌘A key-down      ───▶  InputEvent::SelectAll  ───▶  if copy_on_select_all ───▶ sleep(delay_ms)
-                                                                                       send_copy_shortcut()
- ⌥ held + mouse up      ───▶ InputEvent::ModifierClick──▶ if paste_on_modifier   ───▶ sleep(delay_ms)
-                                                              _click                  send_paste_shortcut()
+ CGEventTap (macOS)              event_tap.rs             app.rs               platform
+ ───────────────────             ─────────────            ──────               ────────
+ left mouse button up   ───▶   InputEvent::MouseUp   ───▶  if cfg.enabled  ───▶ sleep(delay_ms)
+                                                                                 send_copy_shortcut()
 ```
 
 Two design decisions worth calling out:
@@ -112,19 +106,13 @@ Two design decisions worth calling out:
   naturally reflects the final selection.
 
 - **Why a delay before acting?** The frontmost app needs a moment after the
-  input event to actually update its internal selection/cursor state before
-  a synthesized ⌘C or ⌘V would do the right thing. 50ms is imperceptible to
-  a human but enough of a buffer in practice; it's configurable via
+  mouse-up to actually update its internal selection state before a
+  synthesized ⌘C would pick up the right thing. 50ms is imperceptible to a
+  human but enough of a buffer in practice; it's configurable via
   `Config::action_delay_ms` if a particular app needs more.
 
 ## Known limitations
 
-- **Keyboard layout:** the ⌘A detection matches the physical key at the
-  ANSI "A" position (virtual keycode `0x00`). On non-QWERTY-family layouts
-  (Dvorak, AZERTY, non-Latin layouts) this may not correspond to "select
-  all" in every app. Handling every layout correctly requires translating
-  through the current input source (`UCKeyTranslate`), which was left out
-  of the MVP for simplicity.
 - **Restart after granting permission:** AutoCopy doesn't poll for the
   Accessibility permission being granted while running; if you launch it
   before granting access, quit and relaunch after granting it.
@@ -160,14 +148,15 @@ The `Platform` trait is designed so a new OS backend is the only thing that
 needs writing — `app.rs`, `config.rs`, and `tray.rs` (which already supports
 Windows/Linux via the `tray-icon` crate) need no changes.
 
-- **Windows:** `SetWindowsHookExW(WH_MOUSE_LL/WH_KEYBOARD_LL)` for
-  monitoring, `SendInput` to synthesize Ctrl+C/Ctrl+V. No Accessibility-style
-  permission gate exists, so `has_permission` can simply return `true`. See
+- **Windows:** `SetWindowsHookExW(WH_MOUSE_LL)` for monitoring, `SendInput`
+  to synthesize Ctrl+C. No Accessibility-style permission gate exists, so
+  `has_permission` can simply return `true`. See
   [`src/platform/windows.rs`](src/platform/windows.rs).
 - **Linux:** split by display server — `XRecord` on X11, `evdev`/
   `wlr-virtual-pointer` on Wayland (which has no cross-compositor input
-  monitoring API by design). Synthesizing keys via `XTestFakeKeyEvent` or a
-  virtual `uinput` device. See [`src/platform/linux.rs`](src/platform/linux.rs).
+  monitoring API by design). Synthesizing the key via `XTestFakeKeyEvent` or
+  a virtual `uinput` device. See
+  [`src/platform/linux.rs`](src/platform/linux.rs).
 
 ## License
 

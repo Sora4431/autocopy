@@ -1,11 +1,11 @@
 //! User-facing settings, persisted as JSON.
 //!
-//! Each field is a toggle for one of AutoCopy's triggers, plus the shared
-//! reaction delay. There is deliberately no other configuration surface —
-//! no clipboard history, no per-app rules, nothing that would turn this into
-//! a bigger tool than it claims to be. There is also no in-app settings
-//! window; every toggle here is exposed directly as a checkbox in the tray
-//! menu (see `tray.rs`), and this struct is just what gets written to disk.
+//! There are exactly two: whether AutoCopy is active, and how long it waits
+//! before acting. There is deliberately no other configuration surface — no
+//! clipboard history, no per-app rules, nothing that would turn this into a
+//! bigger tool than it claims to be. There is also no in-app settings
+//! window; `enabled` is exposed directly as a checkbox in the tray menu (see
+//! `tray.rs`), and this struct is just what gets written to disk.
 
 use std::path::PathBuf;
 
@@ -19,29 +19,18 @@ pub struct Config {
     /// paragraph-select — a mouse-up is a mouse-up, and sending ⌘C when
     /// nothing happens to be selected is a harmless no-op, so there's no
     /// need to distinguish "was this actually a drag" from the event alone.
-    pub copy_on_selection: bool,
-
-    /// Copy after a plain ⌘A (Select All), with no other modifiers held.
-    pub copy_on_select_all: bool,
-
-    /// Paste at the click location when ⌥ (Option) is held during a click.
-    /// Off by default: unlike the copy triggers, an unwanted paste can
-    /// overwrite content the user didn't intend to touch, so this one is
-    /// opt-in rather than opt-out.
-    pub paste_on_modifier_click: bool,
+    pub enabled: bool,
 
     /// Delay, in milliseconds, between the triggering event and sending the
     /// synthesized shortcut. Gives the frontmost app a moment to finish
-    /// updating its selection or cursor position before we act on it.
+    /// updating its selection before we act on it.
     pub action_delay_ms: u64,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
-            copy_on_selection: true,
-            copy_on_select_all: true,
-            paste_on_modifier_click: false,
+            enabled: true,
             action_delay_ms: 50,
         }
     }

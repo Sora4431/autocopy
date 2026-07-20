@@ -2,8 +2,8 @@
 //!
 //! AutoCopy needs three OS-level capabilities that don't exist in `std`:
 //!
-//!   1. Global input monitoring (mouse + keyboard, even when this app isn't focused)
-//!   2. Synthesizing keyboard shortcuts (⌘C / ⌘V) system-wide
+//!   1. Global mouse monitoring (even when this app isn't focused)
+//!   2. Synthesizing the "copy" keyboard shortcut (⌘C) system-wide
 //!   3. Requesting the OS permission that (1) and (2) require (Accessibility on macOS)
 //!
 //! Every OS exposes these very differently (CGEventTap vs. SetWindowsHookEx
@@ -31,16 +31,14 @@ pub use linux::LinuxPlatform as CurrentPlatform;
 
 /// A high-level input event, already translated from whatever raw OS event
 /// produced it. `app.rs` reacts only to these — never to raw CGEvents, Win32
-/// messages, X11 records, etc.
+/// messages, X11 records, etc. There's only one variant today, but this
+/// stays an enum (rather than a bare callback) so a future trigger doesn't
+/// require reshaping the channel between `Platform` and `app.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEvent {
     /// The left mouse button was released — see the doc comment on
-    /// `Config::copy_on_selection` for why this alone is a sufficient signal.
+    /// `Config::enabled` for why this alone is a sufficient signal.
     MouseUp,
-    /// A plain ⌘A (Select All) was pressed.
-    SelectAll,
-    /// A click occurred while the paste modifier (⌥ Option) was held.
-    ModifierClick,
 }
 
 /// Everything a platform backend must provide. Implement this once per OS
@@ -64,8 +62,4 @@ pub trait Platform {
     /// Synthesizes the OS "copy" shortcut (⌘C on macOS) as if the user
     /// pressed it themselves. Safe to call from any thread.
     fn send_copy_shortcut(&self);
-
-    /// Synthesizes the OS "paste" shortcut (⌘V on macOS). Safe to call from
-    /// any thread.
-    fn send_paste_shortcut(&self);
 }

@@ -1,0 +1,27 @@
+[package]
+name = "autocopy"
+version = "0.1.0"
+edition = "2021"
+description = "Automatically copies selected text to the clipboard. Privacy-first, no telemetry, not a clipboard manager."
+license = "MIT"
+repository = "https://github.com/sora4431/autocopy"
+readme = "README.md"
+
+[[bin]]
+name = "autocopy"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"
+tray-icon = "0.19"
+
+# Everything below is only compiled on macOS. On Windows/Linux these are
+# simply absent from the build, so `cargo build` there only needs the shared
+# dependencies above plus whatever the future backend adds to its own
+# platform-gated section.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.24"
+core-foundation = "0.10"
+cocoa = "0.25"

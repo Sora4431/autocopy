@@ -16,6 +16,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "5"
 tray-icon = "0.19"
+# Decodes the embedded tray icon asset (assets/icon.png) at startup. Just the
+# PNG decoder, not the full `image` crate — we only need one format.
+png = "0.17"
 
 # Everything below is only compiled on macOS. On Windows/Linux these are
 # simply absent from the build, so `cargo build` there only needs the shared

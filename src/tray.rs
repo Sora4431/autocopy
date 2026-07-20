@@ -53,25 +53,65 @@ pub fn build(config: Arc<Mutex<Config>>) -> TrayIcon {
         .expect("failed to create tray icon")
 }
 
-/// A small filled dot, generated at compile time from math rather than
-/// bundled as an image asset — one less file, and one less dependency
-/// (no PNG/image-decoding crate needed for a single-color glyph). Marked as
-/// a "template" image via `with_icon_as_template`, so macOS recolors it
-/// automatically for light/dark menu bars.
+/// The tray icon: an apple silhouette, baked into the binary via
+/// `include_bytes!` rather than read from disk at runtime — one less way
+/// for the build to break depending on the current directory, and it keeps
+/// the whole app a single self-contained executable. `assets/icon.png` is a
+/// square RGBA PNG whose color channels are irrelevant; only alpha carries
+/// the shape, since `with_icon_as_template` (see `build` above) tells macOS
+/// to recolor it for light/dark menu bars and menu highlights itself.
 fn app_icon() -> Icon {
-    const SIZE: u32 = 22;
-    let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
-    let center = SIZE as f32 / 2.0;
-    let radius = SIZE as f32 / 2.0 - 2.0;
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let dx = x as f32 - center;
-            let dy = y as f32 - center;
-            if (dx * dx + dy * dy).sqrt() <= radius {
-                let idx = ((y * SIZE + x) * 4) as usize;
-                rgba[idx + 3] = 255; // alpha only — template images are monochrome
-            }
-        }
+    let (rgba, width, height) = decode_icon_png(include_bytes!("../assets/icon.png"));
+    Icon::from_rgba(rgba, width, height).expect("failed to build tray icon bitmap")
+}
+
+fn decode_icon_png(bytes: &[u8]) -> (Vec<u8>, u32, u32) {
+    let mut decoder = png::Decoder::new(bytes);
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder
+        .read_info()
+        .expect("embedded tray icon PNG is invalid");
+
+    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let info = reader
+        .next_frame(&mut buf)
+        .expect("failed to decode embedded tray icon PNG");
+    let rgba = to_rgba8(&buf, info.color_type, info.bit_depth);
+    (rgba, info.width, info.height)
+}
+
+/// `assets/icon.png` is authored as 8-bit RGBA, but this normalizes any
+/// other encoding (e.g. an RGB export with no alpha channel) so a future
+/// icon swap doesn't silently corrupt the tray icon just because someone
+/// exported it slightly differently.
+fn to_rgba8(buf: &[u8], color_type: png::ColorType, bit_depth: png::BitDepth) -> Vec<u8> {
+    assert_eq!(bit_depth, png::BitDepth::Eight, "expected an 8-bit PNG");
+    match color_type {
+        png::ColorType::Rgba => buf.to_vec(),
+        png::ColorType::Rgb => buf
+            .chunks_exact(3)
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect(),
+        png::ColorType::GrayscaleAlpha => buf
+            .chunks_exact(2)
+            .flat_map(|p| [p[0], p[0], p[0], p[1]])
+            .collect(),
+        png::ColorType::Grayscale => buf.iter().flat_map(|&v| [v, v, v, 255]).collect(),
+        png::ColorType::Indexed => panic!("indexed PNGs aren't supported — re-export as RGBA"),
     }
-    Icon::from_rgba(rgba, SIZE, SIZE).expect("failed to build tray icon bitmap")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_icon_decodes() {
+        let (rgba, width, height) = decode_icon_png(include_bytes!("../assets/icon.png"));
+        assert_eq!(rgba.len(), (width * height * 4) as usize);
+        assert!(width > 0 && height > 0);
+
+        let opaque_pixels = rgba.chunks_exact(4).filter(|p| p[3] > 128).count();
+        assert!(opaque_pixels > 0, "icon should not be fully transparent");
+    }
 }

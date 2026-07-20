@@ -49,6 +49,8 @@ keystrokes, never logs anything, and never sends anything over the network
 ## Architecture
 
 ```
+assets/
+    icon.png          tray icon artwork (RGBA PNG, alpha = shape)
 src/
     main.rs         entry point
     app.rs           wires config + platform + tray together (no OS-specific code)
@@ -64,6 +66,12 @@ src/
         windows.rs      stub — documents what a real backend would use
         linux.rs        stub — documents what a real backend would use
 ```
+
+`assets/icon.png` is baked into the binary at compile time (`include_bytes!`
+in `tray.rs`), so the built executable stays a single self-contained file —
+no separate icon file to lose track of at runtime. It's rendered as a
+"template" image, so only its alpha channel matters; macOS recolors it
+automatically for light/dark menu bars.
 
 The application layer (`app.rs`, `config.rs`, `tray.rs`) never imports
 anything OS-specific. It only knows about the `Platform` trait:

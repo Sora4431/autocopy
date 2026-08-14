@@ -33,9 +33,7 @@ pub use linux::LinuxPlatform as CurrentPlatform;
 
 /// A high-level input event, already translated from whatever raw OS event
 /// produced it. `app.rs` reacts only to these — never to raw CGEvents, Win32
-/// messages, X11 records, etc. Events arrive on the channel in the order the
-/// user produced them; the select-all arm/cancel logic in `app.rs` depends
-/// on that ordering.
+/// messages, X11 records, etc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEvent {
     /// The user finished a gesture that plausibly ended a text selection —
@@ -47,26 +45,13 @@ pub enum InputEvent {
     PotentialSelection,
 
     /// The user pressed the platform's select-all shortcut (⌘A on macOS) as
-    /// a bare chord — no extra modifiers, not an autorepeat, and not a key
-    /// event AutoCopy synthesized itself.
-    ///
-    /// This does **not** mean "copy now". Select-all is *usually* followed
-    /// by a copy, but its other everyday uses — ⌘A then ⌘V or typing to
-    /// replace everything, ⌘A then an arrow key to jump to the start/end —
-    /// must never auto-copy: a ⌘C fired into the middle of a
-    /// select-all-then-paste silently overwrites the very clipboard content
-    /// the user was about to paste. So this event only *arms* a pending
-    /// copy in `app.rs`, which fires after a quiet window unless
-    /// `OtherActivity` cancels it first.
+    /// a bare chord — no extra modifiers, and not an autorepeat. Treated as
+    /// "select all *and copy*": AutoCopy's whole premise is that the ⌘C
+    /// after ⌘A is redundant, so this copies on the same short delay as a
+    /// mouse selection. The known cost — ⌘A followed by a paste/typing
+    /// *replaces* the clipboard with the selection first — is a deliberate
+    /// trade for predictability; see the README's design notes.
     SelectAllPressed,
-
-    /// Some other user input happened — another key went down, or a mouse
-    /// button was pressed. Its only job is to cancel an armed select-all
-    /// copy: input right after ⌘A means the user is replacing, deselecting,
-    /// or moving on, not copying. Deliberately carries no payload — the
-    /// platform layer never forwards *which* key was pressed, only that one
-    /// was.
-    OtherActivity,
 }
 
 /// Everything a platform backend must provide. Implement this once per OS

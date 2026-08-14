@@ -6,28 +6,18 @@
 //! automation tools use. `CGEventPost` is safe to call from any thread; it
 //! does not require the caller to own the main run loop.
 //!
-//! Indistinguishable to *other* applications, that is — AutoCopy itself must
-//! be able to tell its own key events apart from the user's, because they
-//! come right back through the keyboard event tap in `event_tap.rs`, where
-//! an untagged ⌘C would register as "user activity" and cancel a pending
-//! select-all copy. Hence every event posted here carries
-//! [`SYNTHESIZED_EVENT_TAG`] in its user-data field, which the tap checks
-//! first and discards.
+//! These events also echo back through our own keyboard tap in
+//! `event_tap.rs`, but that's harmless by construction: the only chord the
+//! tap reacts to is ⌘A, and the only key ever synthesized here is C — the
+//! echo can't re-trigger anything.
 
-use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode, EventField};
+use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
 /// Virtual keycode for the physical "C" key on ANSI (US QWERTY-family)
 /// layouts. A different physical key may sit there on other layouts; see
 /// the README's "Known limitations" section.
 const KEYCODE_C: CGKeyCode = 0x08;
-
-/// Marker written into `EventField::EVENT_SOURCE_USER_DATA` of every key
-/// event AutoCopy posts, so its own event tap can recognize and ignore
-/// them. The value is arbitrary but stable — "ACPY" in ASCII. (This is the
-/// established pattern for taps that both observe and synthesize input;
-/// the field is preserved end-to-end through the HID event stream.)
-pub const SYNTHESIZED_EVENT_TAG: i64 = 0x4143_5059;
 
 pub fn send_copy() {
     let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) else {
@@ -43,7 +33,6 @@ pub fn send_copy() {
             continue;
         };
         event.set_flags(CGEventFlags::CGEventFlagCommand);
-        event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, SYNTHESIZED_EVENT_TAG);
         event.post(CGEventTapLocation::HID);
     }
 }

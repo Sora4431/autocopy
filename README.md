@@ -12,13 +12,12 @@ one keystroke. That's the whole product.
 
 - Lives in the menu bar only — no Dock icon, no windows
 - Auto-copies when you finish a text selection (drag, double- or triple-click)
-- Auto-copies after ⌘A (select all) — unless you immediately keep typing,
-  paste, or click, in which case it correctly does nothing (see below)
+- Auto-copies after ⌘A (select all) — with AutoCopy running, ⌘A simply
+  *means* "select all and copy"
 - Skips plain clicks, Control-clicks, and gestures that didn't actually
   select anything — no beeps, no clipboard churn
 - One on/off checkbox in the tray menu, plus Quit
-- Configurable reaction delays (50ms after a mouse selection, a 300ms
-  quiet window after ⌘A)
+- Configurable reaction delay (default 50ms)
 - Zero network access, zero telemetry, zero data collection
 
 ## Non-goals
@@ -28,7 +27,7 @@ one keystroke. That's the whole product.
 - OCR, AI, or content transformation
 - Cloud sync of any kind
 - Keyboard shortcuts to trigger actions manually
-- Any settings beyond the three in [`Config`](src/config.rs)
+- Any settings beyond the two in [`Config`](src/config.rs)
 
 ## Why does it need Accessibility and Input Monitoring permissions?
 
@@ -53,15 +52,15 @@ prompts. If you skip one, add AutoCopy manually in the corresponding
 settings pane, then quit and relaunch.
 
 **What AutoCopy does with that access:** it opens two *listen-only* event
-taps (see below). The mouse tap watches mouse button presses and releases —
-nothing else. The keyboard tap sees key-down events and reduces each one,
-inside the tap callback, to a single bit: "that was exactly ⌘A" or "some
-other key went down" (the cancel signal for a pending select-all copy).
-*Which* other key is never forwarded, stored, or logged. After a trigger,
-AutoCopy also asks the focused app (through the same Accessibility API, via
-`AXSelectedText`) whether any text is actually selected; the answer is
-checked for non-emptiness and immediately discarded. Nothing is ever sent
-over the network (the app has no network code at all).
+taps (see below). The mouse tap watches left mouse button presses and
+releases — nothing else. The keyboard tap sees key-down events and checks
+each one, inside the tap callback, for exactly one thing: was it a bare ⌘A?
+Every other keystroke is dropped on the spot — never forwarded, stored, or
+logged. After a trigger, AutoCopy also asks the focused app (through the
+same Accessibility API, via `AXSelectedText`) whether any text is actually
+selected; the answer is checked for non-emptiness and immediately
+discarded. Nothing is ever sent over the network (the app has no network
+code at all).
 
 ## Architecture
 
@@ -79,7 +78,7 @@ src/
             mod.rs      ties the pieces together, owns the Cocoa run loop
             event_tap.rs  global mouse + keyboard monitoring, gesture/chord filters (CGEventTap ×2)
             selection.rs  "is text actually selected?" check (AXSelectedText)
-            simulate.rs   synthesizing ⌘C (CGEventPost), tagged so our own tap ignores it
+            simulate.rs   synthesizing ⌘C (CGEventPost)
             permissions.rs  Accessibility + Input Monitoring permission check/request
         windows.rs      stub — documents what a real backend would use
         linux.rs        stub — documents what a real backend would use
@@ -118,8 +117,7 @@ nothing left for our own trait to abstract there.
 ```
  mouse tap (CGEventTap)    event_tap.rs                              app.rs
  ───────────────────       ─────────────                             ─────────────────
- any mouse button down ─▶  InputEvent::OtherActivity  ──────────▶  cancel armed ⌘A copy
- left mouse down    ───▶  ...and remember where the click started
+ left mouse down    ───▶  remember where the click started
  left mouse up      ───▶  gesture filter:
                             Control held?              → ignore (right-click stand-in)
                             double/triple click?       → selection gesture
@@ -127,32 +125,23 @@ nothing left for our own trait to abstract there.
                             otherwise                  → ignore (plain click)
                                     │
                                     ▼
-                          InputEvent::PotentialSelection
-                                    │  if cfg.enabled
-                                    ▼
-                          sleep(action_delay_ms)
-                                    │
-                          focused app says "no text selected"? → do nothing
-                                    ▼
-                          send ⌘C (send_copy_shortcut)
-
- keyboard tap (CGEventTap)
- ───────────────────
- key down           ───▶  synthesized by AutoCopy itself? → ignore (tagged)
-                          autorepeat?                     → ignore
-                          exactly ⌘A (no ⇧⌃⌥)?
-                            yes → InputEvent::SelectAllPressed
-                            no  → InputEvent::OtherActivity
-                                    │
-                                    ▼
-                          SelectAllPressed arms a copy (if cfg.enabled):
-                                    │
-                          sleep(select_all_delay_ms)   ◀── the quiet window
-                                    │
-                          did *any* other input arrive meanwhile? → do nothing
-                          focused app says "no text selected"?    → do nothing
-                                    ▼
-                          send ⌘C (send_copy_shortcut)
+                          InputEvent::PotentialSelection ──┐
+                                                           │
+ keyboard tap (CGEventTap)                                 │
+ ───────────────────                                       │
+ key down           ───▶  chord filter:                    │
+                            autorepeat?           → ignore │
+                            exactly ⌘A (no ⇧⌃⌥)?  → InputEvent::SelectAllPressed
+                            anything else         → dropped inside the callback
+                                                           │
+                                              both paths, identically:
+                                                           │  if cfg.enabled
+                                                           ▼
+                                                 sleep(action_delay_ms)
+                                                           │
+                                       focused app says "no text selected"? → do nothing
+                                                           ▼
+                                              send ⌘C (send_copy_shortcut)
 ```
 
 Four design decisions worth calling out:
@@ -180,21 +169,21 @@ Four design decisions worth calling out:
   human but enough of a buffer in practice; it's configurable via
   `Config::action_delay_ms` if a particular app needs more.
 
-- **Why doesn't ⌘A copy immediately?** Because ⌘A doesn't always mean
-  "copy next". Its other everyday uses — ⌘A then ⌘V or typing to *replace*
-  everything, ⌘A then an arrow key to jump to the start or end — must never
-  auto-copy: a ⌘C fired into the middle of select-all-then-paste silently
-  overwrites the very clipboard content you were about to paste, which is
-  the worst thing a clipboard utility can do. The two failure modes aren't
-  symmetric — a wrongly *skipped* copy costs one manual ⌘C, a wrongly
-  *fired* copy is invisible data loss — so the rule errs hard toward
-  skipping: after ⌘A, AutoCopy waits `select_all_delay_ms` (default 300ms),
-  and **any** input during that window — another key, a mouse press,
-  anything — cancels the pending copy, no exceptions. Pressing ⌘C yourself
-  in the window also just works: it cancels the pending automatic one and
-  your own copy proceeds, so nothing fires twice. A second ⌘A re-arms the
-  window rather than double-copying, and AutoCopy tags its own synthesized
-  events so they can never be mistaken for user activity.
+- **Why does ⌘A copy immediately, with no grace period?** An earlier
+  design waited a few hundred milliseconds after ⌘A and cancelled the copy
+  if any other input arrived, to protect the select-all-then-paste-over
+  flow (⌘A, then ⌘V or typing to replace everything) from having its
+  clipboard clobbered. It was dropped on purpose: it made the trigger
+  unpredictable — whether a fast ⌘A → ⌘Tab → ⌘V found anything on the
+  clipboard depended on typing speed — and the failure it guarded against
+  is smaller than it looks. If ⌘A auto-copies and you then paste over,
+  you paste the selection back onto itself: the text is unchanged (and
+  ⌘Z-recoverable in any case); all you've lost is the old clipboard
+  content, which a re-copy restores. Someone running AutoCopy knows ⌘A
+  now means "select all *and copy*" — a simple rule that always holds
+  beats a clever one that sometimes doesn't. Autorepeat is still ignored
+  (holding ⌘A fires one copy, not fifteen a second), and extra modifiers
+  disqualify the chord, since ⇧⌘A / ⌃⌘A / ⌥⌘A are different shortcuts.
 
 ## Known limitations
 
@@ -206,15 +195,12 @@ Four design decisions worth calling out:
   shape is indistinguishable from list multi-select gestures, and a wrong
   copy is worse than an occasional manual ⌘C, so single clicks never
   qualify regardless of modifiers.
-- **Anything you press right after ⌘A cancels the auto-copy — including
-  ⌘Tab.** That's the deliberate any-input-cancels rule above, and it means
-  a fast ⌘A → ⌘Tab → ⌘V can find the clipboard unchanged (nothing was
-  copied). The recovery is one manual ⌘C; the alternative — trying to guess
-  which follow-up keys are "safe" — is how clipboards get clobbered.
-- **Conversely, if you pause past the quiet window and *then* type or
-  paste over the selection,** the auto-copy has already fired and replaced
-  whatever was on the clipboard. Lengthen `select_all_delay_ms` in the
-  config if you often select-all-and-replace at a slow pace.
+- **⌘A always replaces the clipboard, even when you weren't going to
+  copy.** Select-all-then-paste-over (⌘A, then ⌘V or typing) puts the
+  selection on the clipboard first, so the follow-up ⌘V pastes the text
+  back onto itself and whatever you had copied before is gone (a re-copy
+  gets it back; the text itself is never lost — ⌘Z covers edits). This is
+  the accepted cost of a predictable trigger; see the design note above.
 - **⌘A and ⌘C are matched/synthesized by physical key position** (ANSI
   virtual keycodes), which is correct on US-style and JIS layouts but off
   on layouts that move those letters (e.g. AZERTY).

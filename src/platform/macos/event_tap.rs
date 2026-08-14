@@ -31,18 +31,14 @@
 //!   implements the first, purely mechanical layer of filtering (gesture
 //!   shape: did the pointer travel, was it a multi-click?); the second
 //!   layer — "is there actually text selected?" — lives in `selection.rs`
-//!   and runs right before the copy fires. Mouse *presses* (any button)
-//!   also double as cancel signals for an armed select-all copy, since a
-//!   click after ⌘A collapses or replaces the selection.
+//!   and runs right before the copy fires.
 //!
-//! - **Keyboard tap.** Watches key-downs for exactly one chord — bare ⌘A —
-//!   and reduces every event to one of two facts before it leaves this
-//!   module: "that was select-all" (`SelectAllPressed`) or "some other key
-//!   went down" (`OtherActivity`, the cancel signal). Which key it was is
-//!   never forwarded, stored, or logged. Key events AutoCopy synthesized
-//!   itself (tagged in `simulate.rs`) and autorepeats are ignored entirely,
-//!   so our own ⌘C can never masquerade as user activity and a held-down
-//!   ⌘A doesn't re-arm on every repeat.
+//! - **Keyboard tap.** Watches key-downs for exactly one chord — bare ⌘A,
+//!   not an autorepeat — and emits an event only when it sees it; every
+//!   other keystroke is dropped on the floor inside the tap callback,
+//!   never forwarded, stored, or logged. (Our own synthesized ⌘C also
+//!   passes through here, but it can't trigger anything: the only chord
+//!   this tap reacts to is on a different key.)
 
 use std::cell::Cell;
 use std::sync::mpsc::Sender;
@@ -53,7 +49,6 @@ use core_graphics::event::{
     CGEventType, EventField,
 };
 
-use super::simulate;
 use crate::platform::InputEvent;
 
 /// Minimum distance (in screen points) the pointer must travel between
@@ -87,30 +82,17 @@ fn start_mouse_tap(tx: Sender<InputEvent>) {
         CGEventTapLocation::HID,
         CGEventTapPlacement::HeadInsertEventTap,
         CGEventTapOptions::ListenOnly,
-        vec![
-            CGEventType::LeftMouseDown,
-            CGEventType::LeftMouseUp,
-            CGEventType::RightMouseDown,
-            CGEventType::OtherMouseDown,
-        ],
+        vec![CGEventType::LeftMouseDown, CGEventType::LeftMouseUp],
         move |_proxy, event_type, event: &CGEvent| {
             match event_type {
                 CGEventType::LeftMouseDown => {
                     let p = event.location();
                     press_origin.set((p.x, p.y));
-                    let _ = tx.send(InputEvent::OtherActivity);
                 }
                 CGEventType::LeftMouseUp => {
                     if is_selection_shaped(event, press_origin.get()) {
                         let _ = tx.send(InputEvent::PotentialSelection);
                     }
-                }
-                // A right/middle press after ⌘A means a context menu or
-                // something else entirely is coming — firing a synthesized
-                // ⌘C into a menu's tracking loop gets read as a menu
-                // command, so these must cancel an armed copy too.
-                CGEventType::RightMouseDown | CGEventType::OtherMouseDown => {
-                    let _ = tx.send(InputEvent::OtherActivity);
                 }
                 _ => {}
             }
@@ -137,15 +119,11 @@ fn start_keyboard_tap(tx: Sender<InputEvent>) {
         vec![CGEventType::KeyDown],
         move |_proxy, event_type, event: &CGEvent| {
             match event_type {
-                // Our own synthesized ⌘C echoes back through this tap, and
-                // autorepeats carry no new intent — neither counts as user
-                // activity.
-                CGEventType::KeyDown if !is_own_synthesized(event) && !is_autorepeat(event) => {
-                    let _ = tx.send(if is_select_all_chord(event) {
-                        InputEvent::SelectAllPressed
-                    } else {
-                        InputEvent::OtherActivity
-                    });
+                // Only the initial press qualifies — a held-down ⌘A
+                // autorepeats, and firing a copy per repeat would hammer
+                // the frontmost app with ⌘C for no new information.
+                CGEventType::KeyDown if !is_autorepeat(event) && is_select_all_chord(event) => {
+                    let _ = tx.send(InputEvent::SelectAllPressed);
                 }
                 _ => {}
             }
@@ -210,17 +188,8 @@ fn is_selection_shaped(event: &CGEvent, (origin_x, origin_y): (f64, f64)) -> boo
     (dx * dx + dy * dy).sqrt() >= DRAG_THRESHOLD
 }
 
-/// True for key events AutoCopy posted itself (see `simulate.rs`). Without
-/// this check our own synthesized ⌘C would come right back through the tap
-/// and be counted as user activity.
-fn is_own_synthesized(event: &CGEvent) -> bool {
-    event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA)
-        == simulate::SYNTHESIZED_EVENT_TAG
-}
-
 /// True while a key is being held down and the system is generating repeat
-/// events. Only the initial press should arm (or cancel) anything — repeats
-/// carry no new intent.
+/// events.
 fn is_autorepeat(event: &CGEvent) -> bool {
     event.get_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT) != 0
 }

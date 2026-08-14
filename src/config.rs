@@ -1,8 +1,7 @@
 //! User-facing settings, persisted as JSON.
 //!
-//! There are exactly three: whether AutoCopy is active, and how long it
-//! waits before acting on each of its two triggers (mouse selection and
-//! select-all). There is deliberately no other configuration surface — no
+//! There are exactly two: whether AutoCopy is active, and how long it waits
+//! before acting. There is deliberately no other configuration surface — no
 //! clipboard history, no per-app rules, nothing that would turn this into a
 //! bigger tool than it claims to be. There is also no in-app settings
 //! window; `enabled` is exposed directly as a checkbox in the tray menu (see
@@ -21,20 +20,11 @@ pub struct Config {
     /// `platform` module docs for the two layers of filtering behind that.
     pub enabled: bool,
 
-    /// Delay, in milliseconds, between a selection-shaped mouse gesture and
-    /// sending the synthesized shortcut. Gives the frontmost app a moment to
-    /// finish updating its selection before we act on it.
+    /// Delay, in milliseconds, between the triggering event (a
+    /// selection-shaped mouse gesture, or ⌘A) and sending the synthesized
+    /// shortcut. Gives the frontmost app a moment to finish updating its
+    /// selection before we act on it.
     pub action_delay_ms: u64,
-
-    /// The select-all quiet window, in milliseconds: how long after ⌘A
-    /// AutoCopy waits before sending ⌘C, during which *any* other input
-    /// cancels the copy. Much longer than `action_delay_ms` on purpose —
-    /// it's sized to human key-to-key timing, not app repaint latency,
-    /// because its job is to let a follow-up ⌘V/typing/arrow-key arrive and
-    /// prove the user was replacing the selection, not copying it (see
-    /// `InputEvent::SelectAllPressed`). Longer = safer against clipboard
-    /// clobbering, shorter = the copy lands sooner.
-    pub select_all_delay_ms: u64,
 }
 
 impl Default for Config {
@@ -42,7 +32,6 @@ impl Default for Config {
         Config {
             enabled: true,
             action_delay_ms: 50,
-            select_all_delay_ms: 300,
         }
     }
 }

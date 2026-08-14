@@ -18,6 +18,8 @@ one keystroke. That's the whole product.
   select anything — no beeps, no clipboard churn
 - One on/off checkbox in the tray menu, plus Quit
 - Configurable reaction delay (default 50ms)
+- Warns at startup if ⌘A or ⌘C is already rebound to something else on
+  your machine (best-effort — see below)
 - Zero network access, zero telemetry, zero data collection
 
 ## Non-goals
@@ -51,6 +53,35 @@ AutoCopy asks for both once, on first launch, via the standard system
 prompts. If you skip one, add AutoCopy manually in the corresponding
 settings pane, then quit and relaunch.
 
+## Startup shortcut-conflict check
+
+AutoCopy registers no shortcuts of its own, but it *leans* on two of the
+system's: it watches ⌘A and synthesizes ⌘C. If either chord has been
+rebound to something else on a given machine, every auto-copy would
+trigger that something instead. So on each launch, before monitoring
+starts, AutoCopy checks the two places where such rebindings are actually
+recorded:
+
+- **System Settings → Keyboard → Keyboard Shortcuts**
+  (`com.apple.symbolichotkeys`) — no stock binding uses a bare ⌘-letter
+  chord, but they're user-editable.
+- **System Settings → Keyboard → App Shortcuts** (`NSUserKeyEquivalents`,
+  the global domain plus every per-app one) — a menu item reassigned to
+  ⌘C would be invoked by every auto-copy in that app, and a reassigned
+  ⌘A means "select all" isn't select-all there.
+
+Anything found is printed to stderr as a warning. AutoCopy still starts:
+a conflict in one app is no reason to lose auto-copy everywhere else, and
+the person who created the rebinding may well want it.
+
+The check is best-effort by necessity. macOS has no public API for
+enumerating hotkeys that other processes register at runtime (Keyboard
+Maestro macros, launcher utilities, VM key-forwarding), so no launch-time
+check can be complete. What bounds the damage instead is the listen-only
+design: AutoCopy can never swallow or rewrite your input, so the worst any
+undetected conflict can amount to is one extra ⌘C arriving somewhere it
+wasn't wanted.
+
 **What AutoCopy does with that access:** it opens two *listen-only* event
 taps (see below). The mouse tap watches left mouse button presses and
 releases — nothing else. The keyboard tap sees key-down events and checks
@@ -80,6 +111,7 @@ src/
             selection.rs  "is text actually selected?" check (AXSelectedText)
             simulate.rs   synthesizing ⌘C (CGEventPost)
             permissions.rs  Accessibility + Input Monitoring permission check/request
+            conflicts.rs  startup warning if ⌘A/⌘C are already claimed elsewhere
         windows.rs      stub — documents what a real backend would use
         linux.rs        stub — documents what a real backend would use
 ```

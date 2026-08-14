@@ -5,6 +5,7 @@
 //! Future Windows/Linux backends implement the same trait against their own
 //! native APIs — see `platform/windows.rs` and `platform/linux.rs`.
 
+mod conflicts;
 mod event_tap;
 mod permissions;
 mod selection;
@@ -41,6 +42,11 @@ impl Platform for MacPlatform {
     }
 
     fn start_monitoring(&self, tx: Sender<InputEvent>) {
+        // Before touching the input stream, warn (stderr only, never fatal)
+        // if ⌘A/⌘C are already claimed by a system shortcut or a custom App
+        // Shortcut — see `conflicts.rs` for what this can and can't see.
+        conflicts::warn_about_conflicts();
+
         event_tap::start(tx);
 
         unsafe {

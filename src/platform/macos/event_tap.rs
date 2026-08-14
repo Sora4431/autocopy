@@ -89,10 +89,8 @@ fn start_mouse_tap(tx: Sender<InputEvent>) {
                     let p = event.location();
                     press_origin.set((p.x, p.y));
                 }
-                CGEventType::LeftMouseUp => {
-                    if is_selection_shaped(event, press_origin.get()) {
-                        let _ = tx.send(InputEvent::PotentialSelection);
-                    }
+                CGEventType::LeftMouseUp if is_selection_shaped(event, press_origin.get()) => {
+                    let _ = tx.send(InputEvent::PotentialSelection);
                 }
                 _ => {}
             }

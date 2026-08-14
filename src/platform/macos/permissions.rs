@@ -1,18 +1,23 @@
-//! Accessibility permission (`AXIsProcessTrusted`).
+//! The two macOS permissions AutoCopy needs, checked and requested.
 //!
-//! Any API that can observe global input or synthesize events on behalf of
-//! the user — `CGEventTap`, `CGEventPost`, and the Accessibility (`AX*`) APIs
-//! — requires the process to be an Accessibility-"trusted" application. This
+//! **Accessibility** (`AXIsProcessTrusted`): any API that can observe global
+//! *mouse* input or synthesize events on behalf of the user — mouse
+//! `CGEventTap`s, `CGEventPost`, and the Accessibility (`AX*`) APIs —
+//! requires the process to be an Accessibility-"trusted" application. This
 //! is a per-app, user-granted permission (System Settings → Privacy &
 //! Security → Accessibility), separate from macOS's other TCC permissions
 //! (camera, microphone, …) mostly for historical reasons — it predates TCC's
 //! unified consent API, hence the distinct `AXIsProcessTrusted*` functions
 //! rather than a `TCC`-style prompt.
 //!
-//! A listen-only `CGEventTap` (see `event_tap.rs`) can technically observe
-//! everything the user types system-wide, including passwords — which is
-//! exactly why macOS gates it behind explicit, visible user consent instead
-//! of a silent entitlement.
+//! **Input Monitoring** (`CGPreflightListenEventAccess`, macOS 10.15+): a
+//! listen-only `CGEventTap` that includes *keyboard* events is gated behind
+//! this second, separate permission — reasonably so, since such a tap can
+//! technically observe everything the user types system-wide, including
+//! passwords. That's exactly why macOS insists on explicit, visible user
+//! consent instead of a silent entitlement, and why AutoCopy's keyboard tap
+//! (see `event_tap.rs`) reduces every keystroke to "was it ⌘A or not"
+//! before anything leaves the tap callback.
 
 use core_foundation::base::TCFType;
 use core_foundation::boolean::CFBoolean;
@@ -23,6 +28,8 @@ use core_foundation::string::CFString;
 extern "C" {
     fn AXIsProcessTrusted() -> bool;
     fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> bool;
+    fn CGPreflightListenEventAccess() -> bool;
+    fn CGRequestListenEventAccess() -> bool;
 }
 
 pub fn has_permission() -> bool {
@@ -40,5 +47,19 @@ pub fn request_permission() {
         let value = CFBoolean::true_value();
         let options = CFDictionary::from_CFType_pairs(&[(key.as_CFType(), value.as_CFType())]);
         AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef());
+    }
+}
+
+pub fn has_input_monitoring() -> bool {
+    unsafe { CGPreflightListenEventAccess() }
+}
+
+/// Triggers the Input Monitoring consent prompt (or, if it was shown
+/// before, silently adds AutoCopy to the Input Monitoring pane's list for
+/// the user to toggle). Same once-per-app semantics as the Accessibility
+/// prompt above.
+pub fn request_input_monitoring() {
+    unsafe {
+        CGRequestListenEventAccess();
     }
 }

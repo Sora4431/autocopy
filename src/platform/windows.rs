@@ -3,8 +3,13 @@
 //! Sketch of what a real implementation would use:
 //!
 //!   - `SetWindowsHookExW(WH_MOUSE_LL, ...)` for global mouse monitoring —
-//!     the Win32 equivalent of a `CGEventTap`.
-//!   - `SendInput` to synthesize Ctrl+C.
+//!     the Win32 equivalent of a `CGEventTap` — plus `WH_KEYBOARD_LL` to
+//!     spot the Ctrl+A select-all chord (and the "any other key" cancel
+//!     signal behind `InputEvent::OtherActivity`).
+//!   - `SendInput` to synthesize Ctrl+C, marking the injected events (e.g.
+//!     via `KBDLLHOOKSTRUCT::dwExtraInfo`) so the keyboard hook can ignore
+//!     them — the same self-echo problem `simulate.rs` solves with an
+//!     event tag on macOS.
 //!   - UI Automation (`IUIAutomation` + the `TextPattern`) to ask whether
 //!     the focused element has a text selection — the equivalent of
 //!     macOS's `AXSelectedText` check behind `has_text_selection`.

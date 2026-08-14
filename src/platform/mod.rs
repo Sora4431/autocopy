@@ -2,10 +2,11 @@
 //!
 //! AutoCopy needs four OS-level capabilities that don't exist in `std`:
 //!
-//!   1. Global mouse monitoring (even when this app isn't focused)
+//!   1. Global mouse and keyboard monitoring (even when this app isn't focused)
 //!   2. Synthesizing the "copy" keyboard shortcut (⌘C) system-wide
 //!   3. Asking the focused app whether any text is actually selected
-//!   4. Requesting the OS permission the above require (Accessibility on macOS)
+//!   4. Requesting the OS permissions the above require (Accessibility and
+//!      Input Monitoring on macOS)
 //!
 //! Every OS exposes these very differently (CGEventTap vs. SetWindowsHookEx
 //! vs. XRecord/evdev), so all OS-specific code lives behind the `Platform`
@@ -32,9 +33,9 @@ pub use linux::LinuxPlatform as CurrentPlatform;
 
 /// A high-level input event, already translated from whatever raw OS event
 /// produced it. `app.rs` reacts only to these — never to raw CGEvents, Win32
-/// messages, X11 records, etc. There's only one variant today, but this
-/// stays an enum (rather than a bare callback) so a future trigger doesn't
-/// require reshaping the channel between `Platform` and `app.rs`.
+/// messages, X11 records, etc. Events arrive on the channel in the order the
+/// user produced them; the select-all arm/cancel logic in `app.rs` depends
+/// on that ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEvent {
     /// The user finished a gesture that plausibly ended a text selection —
@@ -44,15 +45,37 @@ pub enum InputEvent {
     /// (`Platform::has_text_selection`) runs later, right before the copy
     /// fires.
     PotentialSelection,
+
+    /// The user pressed the platform's select-all shortcut (⌘A on macOS) as
+    /// a bare chord — no extra modifiers, not an autorepeat, and not a key
+    /// event AutoCopy synthesized itself.
+    ///
+    /// This does **not** mean "copy now". Select-all is *usually* followed
+    /// by a copy, but its other everyday uses — ⌘A then ⌘V or typing to
+    /// replace everything, ⌘A then an arrow key to jump to the start/end —
+    /// must never auto-copy: a ⌘C fired into the middle of a
+    /// select-all-then-paste silently overwrites the very clipboard content
+    /// the user was about to paste. So this event only *arms* a pending
+    /// copy in `app.rs`, which fires after a quiet window unless
+    /// `OtherActivity` cancels it first.
+    SelectAllPressed,
+
+    /// Some other user input happened — another key went down, or a mouse
+    /// button was pressed. Its only job is to cancel an armed select-all
+    /// copy: input right after ⌘A means the user is replacing, deselecting,
+    /// or moving on, not copying. Deliberately carries no payload — the
+    /// platform layer never forwards *which* key was pressed, only that one
+    /// was.
+    OtherActivity,
 }
 
 /// Everything a platform backend must provide. Implement this once per OS
 /// and the rest of the application works unmodified.
 pub trait Platform {
-    /// True if this process already holds the permission it needs to
-    /// monitor global input and synthesize key events (Accessibility on
-    /// macOS; likely always `true` on Windows; a udev/input-group check on
-    /// Linux).
+    /// True if this process already holds every permission it needs to
+    /// monitor global input and synthesize key events (Accessibility *and*
+    /// Input Monitoring on macOS; likely always `true` on Windows; a
+    /// udev/input-group check on Linux).
     fn has_permission(&self) -> bool;
 
     /// Prompts the user to grant that permission (e.g. opens System

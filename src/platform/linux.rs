@@ -4,7 +4,9 @@
 //! stacks, unlike macOS/Windows:
 //!
 //!   - X11: the `XRecord` extension (what most global-hotkey tools use),
-//!     via `x11rb` or raw `libX11` bindings.
+//!     via `x11rb` or raw `libX11` bindings — it covers both the mouse
+//!     gestures and the Ctrl+A / any-other-key events the select-all
+//!     trigger needs.
 //!   - Wayland: no cross-compositor equivalent exists by design — Wayland
 //!     deliberately sandboxes input from other clients. The practical path
 //!     is the `wlr-virtual-pointer`/`virtual-keyboard` protocols on

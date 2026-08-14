@@ -1,21 +1,24 @@
 # AutoCopy
 
 AutoCopy is a tiny macOS menu bar utility with exactly one job: when you
-finish selecting text anywhere on your Mac, it automatically copies it to
-the clipboard — the equivalent of pressing ⌘C for you.
+select text anywhere on your Mac — by mouse, or with ⌘A — it automatically
+copies it to the clipboard, the equivalent of pressing ⌘C for you.
 
 It is **not** a clipboard manager. There's no history, no cloud sync, no AI,
-no analytics, no telemetry of any kind. It watches for a selection to end
-and sends one keystroke. That's the whole product.
+no analytics, no telemetry of any kind. It watches for a selection and sends
+one keystroke. That's the whole product.
 
 ## Features
 
 - Lives in the menu bar only — no Dock icon, no windows
 - Auto-copies when you finish a text selection (drag, double- or triple-click)
+- Auto-copies after ⌘A (select all) — unless you immediately keep typing,
+  paste, or click, in which case it correctly does nothing (see below)
 - Skips plain clicks, Control-clicks, and gestures that didn't actually
   select anything — no beeps, no clipboard churn
 - One on/off checkbox in the tray menu, plus Quit
-- Configurable reaction delay (default 50ms)
+- Configurable reaction delays (50ms after a mouse selection, a 300ms
+  quiet window after ⌘A)
 - Zero network access, zero telemetry, zero data collection
 
 ## Non-goals
@@ -25,31 +28,40 @@ and sends one keystroke. That's the whole product.
 - OCR, AI, or content transformation
 - Cloud sync of any kind
 - Keyboard shortcuts to trigger actions manually
-- Any settings beyond the two in [`Config`](src/config.rs)
+- Any settings beyond the three in [`Config`](src/config.rs)
 
-## Why does it need Accessibility permission?
+## Why does it need Accessibility and Input Monitoring permissions?
 
-Detecting "the user just finished selecting text, anywhere, in any app" and
-then simulating a keypress are both privileged operations on macOS. They go
-through the same API surface — Quartz Event Services — that keyboard
-remapping and window-management tools use, and Apple gates all of it behind
-the **Accessibility** permission (System Settings → Privacy & Security →
-Accessibility). There's no narrower permission available; observing global
-mouse input and observing *only selection-related* input aren't different
-capabilities as far as macOS is concerned.
+Detecting "the user just selected text, anywhere, in any app" and then
+simulating a keypress are privileged operations on macOS. They go through
+the same API surface — Quartz Event Services — that keyboard remapping and
+window-management tools use, and Apple gates it behind two permissions in
+System Settings → Privacy & Security:
 
-AutoCopy asks for this once, on first launch, via the standard system
-prompt. If you skip it, add AutoCopy manually in that settings pane, then
-quit and relaunch.
+- **Accessibility** covers the mouse event tap, the "is text actually
+  selected?" query, and posting the synthesized ⌘C. There's no narrower
+  permission available; observing global mouse input and observing *only
+  selection-related* input aren't different capabilities as far as macOS is
+  concerned.
+- **Input Monitoring** (macOS 10.15+) additionally covers the keyboard
+  event tap that notices ⌘A. If you grant only Accessibility, AutoCopy
+  still runs — mouse-selection copying works, and only the ⌘A trigger stays
+  off (it says so on stderr).
 
-**What AutoCopy does with that access:** it opens a *listen-only* event tap
-(see below) that watches exactly one thing — left mouse button presses and
-releases — and does nothing else with the input stream. After a
-selection-shaped gesture, it also asks the focused app (through the same
-Accessibility API, via `AXSelectedText`) whether any text is actually
-selected; the answer is checked for non-emptiness and immediately
-discarded. It never reads or stores keystrokes, never logs anything, and
-never sends anything over the network (the app has no network code at all).
+AutoCopy asks for both once, on first launch, via the standard system
+prompts. If you skip one, add AutoCopy manually in the corresponding
+settings pane, then quit and relaunch.
+
+**What AutoCopy does with that access:** it opens two *listen-only* event
+taps (see below). The mouse tap watches mouse button presses and releases —
+nothing else. The keyboard tap sees key-down events and reduces each one,
+inside the tap callback, to a single bit: "that was exactly ⌘A" or "some
+other key went down" (the cancel signal for a pending select-all copy).
+*Which* other key is never forwarded, stored, or logged. After a trigger,
+AutoCopy also asks the focused app (through the same Accessibility API, via
+`AXSelectedText`) whether any text is actually selected; the answer is
+checked for non-emptiness and immediately discarded. Nothing is ever sent
+over the network (the app has no network code at all).
 
 ## Architecture
 
@@ -65,10 +77,10 @@ src/
         mod.rs        the `Platform` trait + `InputEvent` enum
         macos/         macOS implementation (only backend in the MVP)
             mod.rs      ties the pieces together, owns the Cocoa run loop
-            event_tap.rs  global mouse monitoring + gesture filter (CGEventTap)
+            event_tap.rs  global mouse + keyboard monitoring, gesture/chord filters (CGEventTap ×2)
             selection.rs  "is text actually selected?" check (AXSelectedText)
-            simulate.rs   synthesizing ⌘C (CGEventPost)
-            permissions.rs  Accessibility permission check/request
+            simulate.rs   synthesizing ⌘C (CGEventPost), tagged so our own tap ignores it
+            permissions.rs  Accessibility + Input Monitoring permission check/request
         windows.rs      stub — documents what a real backend would use
         linux.rs        stub — documents what a real backend would use
 ```
@@ -104,9 +116,10 @@ nothing left for our own trait to abstract there.
 ## Event flow
 
 ```
- CGEventTap (macOS)        event_tap.rs                              app.rs / platform
+ mouse tap (CGEventTap)    event_tap.rs                              app.rs
  ───────────────────       ─────────────                             ─────────────────
- left mouse down    ───▶  remember where the click started
+ any mouse button down ─▶  InputEvent::OtherActivity  ──────────▶  cancel armed ⌘A copy
+ left mouse down    ───▶  ...and remember where the click started
  left mouse up      ───▶  gesture filter:
                             Control held?              → ignore (right-click stand-in)
                             double/triple click?       → selection gesture
@@ -122,9 +135,27 @@ nothing left for our own trait to abstract there.
                           focused app says "no text selected"? → do nothing
                                     ▼
                           send ⌘C (send_copy_shortcut)
+
+ keyboard tap (CGEventTap)
+ ───────────────────
+ key down           ───▶  synthesized by AutoCopy itself? → ignore (tagged)
+                          autorepeat?                     → ignore
+                          exactly ⌘A (no ⇧⌃⌥)?
+                            yes → InputEvent::SelectAllPressed
+                            no  → InputEvent::OtherActivity
+                                    │
+                                    ▼
+                          SelectAllPressed arms a copy (if cfg.enabled):
+                                    │
+                          sleep(select_all_delay_ms)   ◀── the quiet window
+                                    │
+                          did *any* other input arrive meanwhile? → do nothing
+                          focused app says "no text selected"?    → do nothing
+                                    ▼
+                          send ⌘C (send_copy_shortcut)
 ```
 
-Three design decisions worth calling out:
+Four design decisions worth calling out:
 
 - **Why not just copy on every mouse-up?** The first prototype did exactly
   that, on the theory that ⌘C with nothing selected is a harmless no-op.
@@ -149,6 +180,22 @@ Three design decisions worth calling out:
   human but enough of a buffer in practice; it's configurable via
   `Config::action_delay_ms` if a particular app needs more.
 
+- **Why doesn't ⌘A copy immediately?** Because ⌘A doesn't always mean
+  "copy next". Its other everyday uses — ⌘A then ⌘V or typing to *replace*
+  everything, ⌘A then an arrow key to jump to the start or end — must never
+  auto-copy: a ⌘C fired into the middle of select-all-then-paste silently
+  overwrites the very clipboard content you were about to paste, which is
+  the worst thing a clipboard utility can do. The two failure modes aren't
+  symmetric — a wrongly *skipped* copy costs one manual ⌘C, a wrongly
+  *fired* copy is invisible data loss — so the rule errs hard toward
+  skipping: after ⌘A, AutoCopy waits `select_all_delay_ms` (default 300ms),
+  and **any** input during that window — another key, a mouse press,
+  anything — cancels the pending copy, no exceptions. Pressing ⌘C yourself
+  in the window also just works: it cancels the pending automatic one and
+  your own copy proceeds, so nothing fires twice. A second ⌘A re-arms the
+  window rather than double-copying, and AutoCopy tags its own synthesized
+  events so they can never be mistaken for user activity.
+
 ## Known limitations
 
 - **Apps that don't report selection state via Accessibility** fall back to
@@ -159,9 +206,26 @@ Three design decisions worth calling out:
   shape is indistinguishable from list multi-select gestures, and a wrong
   copy is worse than an occasional manual ⌘C, so single clicks never
   qualify regardless of modifiers.
-- **Restart after granting permission:** AutoCopy doesn't poll for the
-  Accessibility permission being granted while running; if you launch it
-  before granting access, quit and relaunch after granting it.
+- **Anything you press right after ⌘A cancels the auto-copy — including
+  ⌘Tab.** That's the deliberate any-input-cancels rule above, and it means
+  a fast ⌘A → ⌘Tab → ⌘V can find the clipboard unchanged (nothing was
+  copied). The recovery is one manual ⌘C; the alternative — trying to guess
+  which follow-up keys are "safe" — is how clipboards get clobbered.
+- **Conversely, if you pause past the quiet window and *then* type or
+  paste over the selection,** the auto-copy has already fired and replaced
+  whatever was on the clipboard. Lengthen `select_all_delay_ms` in the
+  config if you often select-all-and-replace at a slow pace.
+- **⌘A and ⌘C are matched/synthesized by physical key position** (ANSI
+  virtual keycodes), which is correct on US-style and JIS layouts but off
+  on layouts that move those letters (e.g. AZERTY).
+- **Apps that remap ⌘A** to something other than select-all will still arm
+  the quiet window; the `AXSelectedText` check usually catches the "nothing
+  got selected" case, but apps that don't report selection state fall back
+  to copy-anyway, same as the mouse path.
+- **Restart after granting permissions:** AutoCopy doesn't poll for the
+  Accessibility or Input Monitoring permissions being granted while
+  running; if you launch it before granting access, quit and relaunch
+  after granting them.
 
 ## Building
 
@@ -175,8 +239,9 @@ cargo build --release
 ./target/release/autocopy
 ```
 
-On first launch, macOS will prompt for Accessibility permission — grant it,
-then quit (from the tray menu) and relaunch.
+On first launch, macOS will prompt for the Accessibility and Input
+Monitoring permissions — grant both, then quit (from the tray menu) and
+relaunch.
 
 ### Packaging as a .app
 

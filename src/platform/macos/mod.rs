@@ -26,11 +26,18 @@ impl MacPlatform {
 
 impl Platform for MacPlatform {
     fn has_permission(&self) -> bool {
-        permissions::has_permission()
+        // Two separate TCC gates: Accessibility covers the mouse tap, the
+        // AX selection check, and posting ⌘C; Input Monitoring (10.15+)
+        // covers the keyboard tap that watches for ⌘A. Missing either one
+        // degrades part of the product, so "has permission" means both.
+        permissions::has_permission() && permissions::has_input_monitoring()
     }
 
     fn request_permission(&self) {
+        // Each call prompts at most once per app; macOS queues the two
+        // dialogs if both are outstanding.
         permissions::request_permission();
+        permissions::request_input_monitoring();
     }
 
     fn start_monitoring(&self, tx: Sender<InputEvent>) {

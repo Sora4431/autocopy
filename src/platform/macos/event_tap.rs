@@ -1,27 +1,48 @@
-//! Global input monitoring via a Quartz Event Tap.
+//! Global input monitoring via Quartz Event Taps.
 //!
 //! `CGEventTap` (Quartz Event Services) is macOS's only public API for
 //! observing input events system-wide, regardless of which application has
 //! focus. It's the same primitive behind Karabiner, Rectangle, and most
 //! other input-remapping/window-management tools — which is also why it
-//! requires Accessibility permission (see `permissions.rs`).
+//! requires user-granted permissions (see `permissions.rs`).
 //!
-//! We create the tap in `ListenOnly` mode: we only ever observe events,
+//! We create every tap in `ListenOnly` mode: we only ever observe events,
 //! never swallow or rewrite them. This is a deliberate safety choice — an
 //! *active* tap that hangs (e.g. a panic inside the callback) can freeze all
 //! keyboard and mouse input system-wide until the process is killed from
 //! another machine. A listen-only tap can never do that; worst case, we
 //! simply miss an event.
 //!
-//! Not every left-click means "a selection just ended", though. Clicking a
-//! sidebar item, pressing a button, dragging a window — all of those end in
-//! a `LeftMouseUp` too, and blindly firing ⌘C after them is not harmless:
-//! when an app's Copy command has nothing to act on, it answers a
-//! synthesized ⌘C with the system alert sound. So this module implements
-//! the first, purely mechanical layer of filtering (gesture shape: did the
-//! pointer travel, was it a multi-click?); the second layer — "is there
-//! actually text selected?" — lives in `selection.rs` and runs right before
-//! the copy fires.
+//! There are **two** taps, not one, because macOS gates them differently:
+//! mouse taps need only the Accessibility permission, but since macOS 10.15
+//! a listen-only tap that includes *keyboard* events additionally requires
+//! the separate Input Monitoring permission. Keeping them separate means a
+//! missing Input Monitoring grant degrades gracefully — ⌘A detection goes
+//! dark (with a clear message on stderr), while mouse-selection copying
+//! keeps working exactly as before.
+//!
+//! What each tap watches, and why:
+//!
+//! - **Mouse tap.** Not every left-click means "a selection just ended".
+//!   Clicking a sidebar item, pressing a button, dragging a window — all of
+//!   those end in a `LeftMouseUp` too, and blindly firing ⌘C after them is
+//!   not harmless: when an app's Copy command has nothing to act on, it
+//!   answers a synthesized ⌘C with the system alert sound. So this module
+//!   implements the first, purely mechanical layer of filtering (gesture
+//!   shape: did the pointer travel, was it a multi-click?); the second
+//!   layer — "is there actually text selected?" — lives in `selection.rs`
+//!   and runs right before the copy fires. Mouse *presses* (any button)
+//!   also double as cancel signals for an armed select-all copy, since a
+//!   click after ⌘A collapses or replaces the selection.
+//!
+//! - **Keyboard tap.** Watches key-downs for exactly one chord — bare ⌘A —
+//!   and reduces every event to one of two facts before it leaves this
+//!   module: "that was select-all" (`SelectAllPressed`) or "some other key
+//!   went down" (`OtherActivity`, the cancel signal). Which key it was is
+//!   never forwarded, stored, or logged. Key events AutoCopy synthesized
+//!   itself (tagged in `simulate.rs`) and autorepeats are ignored entirely,
+//!   so our own ⌘C can never masquerade as user activity and a held-down
+//!   ⌘A doesn't re-arm on every repeat.
 
 use std::cell::Cell;
 use std::sync::mpsc::Sender;
@@ -32,6 +53,7 @@ use core_graphics::event::{
     CGEventType, EventField,
 };
 
+use super::simulate;
 use crate::platform::InputEvent;
 
 /// Minimum distance (in screen points) the pointer must travel between
@@ -41,10 +63,21 @@ use crate::platform::InputEvent;
 /// of a normal (especially trackpad) click doesn't.
 const DRAG_THRESHOLD: f64 = 4.0;
 
-/// Starts the event tap and registers it on the current (main) thread's run
-/// loop. Does not block — the caller is expected to pump the run loop itself
-/// afterwards (see `MacPlatform::start_monitoring`).
+/// Virtual keycode for the physical "A" key on ANSI (US QWERTY-family)
+/// layouts — same caveat as `simulate::KEYCODE_C`: a different physical key
+/// may sit there on other layouts (e.g. AZERTY); see the README's "Known
+/// limitations" section.
+const KEYCODE_A: i64 = 0x00;
+
+/// Starts both event taps and registers them on the current (main) thread's
+/// run loop. Does not block — the caller is expected to pump the run loop
+/// itself afterwards (see `MacPlatform::start_monitoring`).
 pub fn start(tx: Sender<InputEvent>) {
+    start_mouse_tap(tx.clone());
+    start_keyboard_tap(tx);
+}
+
+fn start_mouse_tap(tx: Sender<InputEvent>) {
     // Where the current click started; written on mouse-down, read on the
     // matching mouse-up. The callback only ever runs on this thread's run
     // loop, so a plain `Cell` (no locking) is enough.
@@ -54,17 +87,30 @@ pub fn start(tx: Sender<InputEvent>) {
         CGEventTapLocation::HID,
         CGEventTapPlacement::HeadInsertEventTap,
         CGEventTapOptions::ListenOnly,
-        vec![CGEventType::LeftMouseDown, CGEventType::LeftMouseUp],
+        vec![
+            CGEventType::LeftMouseDown,
+            CGEventType::LeftMouseUp,
+            CGEventType::RightMouseDown,
+            CGEventType::OtherMouseDown,
+        ],
         move |_proxy, event_type, event: &CGEvent| {
             match event_type {
                 CGEventType::LeftMouseDown => {
                     let p = event.location();
                     press_origin.set((p.x, p.y));
+                    let _ = tx.send(InputEvent::OtherActivity);
                 }
                 CGEventType::LeftMouseUp => {
                     if is_selection_shaped(event, press_origin.get()) {
                         let _ = tx.send(InputEvent::PotentialSelection);
                     }
+                }
+                // A right/middle press after ⌘A means a context menu or
+                // something else entirely is coming — firing a synthesized
+                // ⌘C into a menu's tracking loop gets read as a menu
+                // command, so these must cancel an armed copy too.
+                CGEventType::RightMouseDown | CGEventType::OtherMouseDown => {
+                    let _ = tx.send(InputEvent::OtherActivity);
                 }
                 _ => {}
             }
@@ -72,19 +118,60 @@ pub fn start(tx: Sender<InputEvent>) {
         },
     );
 
-    let tap = match tap {
-        Ok(tap) => tap,
-        Err(_) => {
-            eprintln!(
-                "AutoCopy: failed to create the input event tap. This almost \
-                 always means Accessibility permission hasn't been granted \
-                 yet. Grant it in System Settings -> Privacy & Security -> \
-                 Accessibility, then quit and relaunch AutoCopy."
-            );
-            return;
-        }
-    };
+    match tap {
+        Ok(tap) => install(tap),
+        Err(_) => eprintln!(
+            "AutoCopy: failed to create the mouse event tap. This almost \
+             always means Accessibility permission hasn't been granted \
+             yet. Grant it in System Settings -> Privacy & Security -> \
+             Accessibility, then quit and relaunch AutoCopy."
+        ),
+    }
+}
 
+fn start_keyboard_tap(tx: Sender<InputEvent>) {
+    let tap = CGEventTap::new(
+        CGEventTapLocation::HID,
+        CGEventTapPlacement::HeadInsertEventTap,
+        CGEventTapOptions::ListenOnly,
+        vec![CGEventType::KeyDown],
+        move |_proxy, event_type, event: &CGEvent| {
+            match event_type {
+                // Our own synthesized ⌘C echoes back through this tap, and
+                // autorepeats carry no new intent — neither counts as user
+                // activity.
+                CGEventType::KeyDown if !is_own_synthesized(event) && !is_autorepeat(event) => {
+                    let _ = tx.send(if is_select_all_chord(event) {
+                        InputEvent::SelectAllPressed
+                    } else {
+                        InputEvent::OtherActivity
+                    });
+                }
+                _ => {}
+            }
+            None
+        },
+    );
+
+    match tap {
+        Ok(tap) => install(tap),
+        Err(_) => eprintln!(
+            "AutoCopy: failed to create the keyboard event tap, so the \
+             select-all (Cmd+A) trigger is disabled for this run. \
+             Text-selection copying still works. On macOS 10.15+ this tap \
+             needs the Input Monitoring permission: System Settings -> \
+             Privacy & Security -> Input Monitoring, then quit and relaunch \
+             AutoCopy."
+        ),
+    }
+}
+
+/// Registers a tap on the current thread's run loop and enables it. The tap
+/// must outlive this call (its run loop source keeps firing the callback for
+/// the life of the process), so it's intentionally leaked rather than
+/// dropped — dropping it here would remove the tap immediately after this
+/// function returns.
+fn install(tap: CGEventTap<'static>) {
     unsafe {
         let loop_source = tap
             .mach_port
@@ -93,11 +180,6 @@ pub fn start(tx: Sender<InputEvent>) {
         CFRunLoop::get_current().add_source(&loop_source, kCFRunLoopCommonModes);
     }
     tap.enable();
-
-    // The tap must outlive `start` (its run loop source keeps firing the
-    // callback for the life of the process), so it's intentionally leaked
-    // rather than dropped — dropping it here would remove the tap
-    // immediately after this function returns.
     std::mem::forget(tap);
 }
 
@@ -126,4 +208,36 @@ fn is_selection_shaped(event: &CGEvent, (origin_x, origin_y): (f64, f64)) -> boo
     let p = event.location();
     let (dx, dy) = (p.x - origin_x, p.y - origin_y);
     (dx * dx + dy * dy).sqrt() >= DRAG_THRESHOLD
+}
+
+/// True for key events AutoCopy posted itself (see `simulate.rs`). Without
+/// this check our own synthesized ⌘C would come right back through the tap
+/// and be counted as user activity.
+fn is_own_synthesized(event: &CGEvent) -> bool {
+    event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA)
+        == simulate::SYNTHESIZED_EVENT_TAG
+}
+
+/// True while a key is being held down and the system is generating repeat
+/// events. Only the initial press should arm (or cancel) anything — repeats
+/// carry no new intent.
+fn is_autorepeat(event: &CGEvent) -> bool {
+    event.get_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT) != 0
+}
+
+/// The select-all chord filter: bare ⌘A and nothing else.
+fn is_select_all_chord(event: &CGEvent) -> bool {
+    if event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) != KEYCODE_A {
+        return false;
+    }
+    let flags = event.get_flags();
+    // ⇧⌘A, ⌃⌘A, and ⌥⌘A are entirely different shortcuts — "deselect all"
+    // among them — so any extra modifier disqualifies the chord. Caps Lock
+    // and Fn are deliberately not checked: neither changes what ⌘A means.
+    flags.contains(CGEventFlags::CGEventFlagCommand)
+        && !flags.intersects(
+            CGEventFlags::CGEventFlagControl
+                | CGEventFlags::CGEventFlagAlternate
+                | CGEventFlags::CGEventFlagShift,
+        )
 }
